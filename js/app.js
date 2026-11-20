@@ -3,6 +3,7 @@ import { PIDS, messages, dtcFromMessages } from './protocol.js';
 import { BleTransport, bleSupported, pickDevice } from './transport-ble.js';
 import { FakeTransport } from './transport-fake.js';
 import { runDiagnostics, summarize } from './diag.js';
+import { parseKb, statusNote } from './kb.js';
 import { APP_VERSION, buildPassportFile, buildLogText, buildCsv, exportName } from './report.js';
 
 const $ = (id) => document.getElementById(id);
@@ -14,6 +15,7 @@ let cancelFlag = false;
 let liveRunning = false;
 let samples = [];
 let dtcDict = null;
+let kb = null;
 const t0 = performance.now();
 const log = [];
 
@@ -224,11 +226,41 @@ async function loadDict() {
   } catch { dtcDict = new Map(); }
   return dtcDict;
 }
+async function loadKb() {
+  if (kb) return kb;
+  try { kb = parseKb(await (await fetch('data/kb_ru.json')).json()); } catch { kb = parseKb({ cards: [] }); }
+  return kb;
+}
+function kbDetails(card, label) {
+  const det = document.createElement('details'); det.className = 'kb';
+  const sum = document.createElement('summary'); sum.textContent = label; det.appendChild(sum);
+  for (const s of card.secs) {
+    const h = document.createElement('h4'); h.textContent = s.h; det.appendChild(h);
+    const p = document.createElement('div'); p.className = 'kb-text'; p.textContent = s.t; det.appendChild(p);
+  }
+  const n = document.createElement('p'); n.className = 'muted small'; n.textContent = statusNote(card); det.appendChild(n);
+  return det;
+}
+async function renderKbList() {
+  const k = await loadKb();
+  const box = $('kb-list'); box.innerHTML = '';
+  const cards = [...k.symptoms, ...k.refs];
+  $('kb-title').hidden = cards.length === 0;
+  for (const c of cards) {
+    const d = document.createElement('div'); d.className = 'card';
+    const h = document.createElement('h3'); h.textContent = c.title; d.appendChild(h);
+    if (c.rule) { const r = document.createElement('div'); r.textContent = c.rule; d.appendChild(r); }
+    d.appendChild(kbDetails(c, 'Открыть')); box.appendChild(d);
+  }
+}
+renderKbList();
+
 $('btn-dtc').addEventListener('click', async () => {
   if (!client) return;
   $('btn-dtc').disabled = true; $('dtc-list').innerHTML = '';
   setStatus('dtc-status', 'Чтение кодов…');
   const dict = await loadDict();
+  await loadKb();
   const sets = [['03', 0x43, 'Активные коды'], ['07', 0x47, 'Ожидающие коды (замечены, но не подтверждены)'], ['0A', 0x4a, 'Постоянные коды']];
   let any = false, answered = false;
   for (const [cmd, header, title] of sets) {
@@ -243,7 +275,7 @@ $('btn-dtc').addEventListener('click', async () => {
       answered = true;
       const codes = dtcFromMessages(ms, client.isCan, header);
       if (!codes.length) { const p = document.createElement('p'); p.className = 'muted'; p.textContent = 'Кодов нет.'; $('dtc-list').appendChild(p); }
-      for (const code of codes) { any = true; $('dtc-list').appendChild(renderDtc(code, dict.get(code))); }
+      for (const code of codes) { any = true; $('dtc-list').appendChild(renderDtc(code, dict.get(code), kb?.forCode(code))); }
     } catch (e) {
       const p = document.createElement('p'); p.className = 'muted'; p.textContent = `${title}: ошибка связи (${e.message})`; $('dtc-list').appendChild(p);
     }
@@ -252,7 +284,7 @@ $('btn-dtc').addEventListener('click', async () => {
   $('btn-dtc').disabled = false;
 });
 
-function renderDtc(code, info) {
+function renderDtc(code, info, card) {
   const d = document.createElement('div');
   d.className = 'card dtc u' + (info?.urgency ?? 2);
   const h = document.createElement('h3'); h.textContent = `${code} — ${info?.title ?? 'код не найден в справочнике'}`; d.appendChild(h);
@@ -260,6 +292,7 @@ function renderDtc(code, info) {
   p.textContent = info?.meaning ?? 'Расшифровки этого кода в справочнике нет. Для кодов производителя (P1xxx) значение зависит от марки и блока.';
   d.appendChild(p);
   if (info?.causes?.length) { const ul = document.createElement('ul'); info.causes.forEach((c) => { const li = document.createElement('li'); li.textContent = c; ul.appendChild(li); }); d.appendChild(ul); }
+  if (card) d.appendChild(kbDetails(card, 'Подробная справка'));
   return d;
 }
 
